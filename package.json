@@ -1,8 +1,1 @@
-{
-  "name": "tanlounge-gbp-reviews",
-  "private": true,
-  "type": "commonjs",
-  "dependencies": {
-    "googleapis": "^131.0.0"
-  }
-}
+{ "dependencies": { "googleapis": "^131.0.0" } }
