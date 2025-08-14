@@ -1,89 +1,75 @@
-// /netlify/functions/send-quiz-email.js
-// Env vars: SENDGRID_API_KEY, FROM_EMAIL, INTERNAL_EMAIL (optional)
+const { google } = require('googleapis');
 
 exports.handler = async (event) => {
-  // CORS preflight
-  if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type'
-      },
-      body: ''
-    };
-  }
-  if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      headers: { 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ error: 'Method not allowed' })
-    };
-  }
+  if (event.httpMethod === 'OPTIONS') return ok('', cors());
+  if (event.httpMethod !== 'POST') return err(405, 'Method not allowed');
 
   try {
-    const { SENDGRID_API_KEY, FROM_EMAIL, INTERNAL_EMAIL } = process.env;
-    if (!SENDGRID_API_KEY || !FROM_EMAIL) {
-      return { statusCode: 500, headers:{'Access-Control-Allow-Origin':'*'}, body: JSON.stringify({ error: 'Email not configured' }) };
-    }
+    const {
+      GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN,
+      GMAIL_SENDER, INTERNAL_EMAIL
+    } = process.env;
+    if (!GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET || !GMAIL_REFRESH_TOKEN || !GMAIL_SENDER)
+      return err(500, 'Gmail OAuth not configured');
 
-    const data = JSON.parse(event.body || '{}');
-    const { name='', email='', phone='', marketingConsent=false, result={}, answers={}, source='', site='' } = data;
-    if (!name || !email) {
-      return { statusCode: 400, headers:{'Access-Control-Allow-Origin':'*'}, body: JSON.stringify({ error: 'Missing name or email' }) };
-    }
+    const body = JSON.parse(event.body || '{}');
+    const { name='', email='', phone='', marketingConsent=false, result={}, answers={}, site='' } = body;
+    if (!name || !email) return err(400, 'Missing name or email');
 
-    const subject = `Your Tan Lounge shade match`;
+    const oAuth2 = new google.auth.OAuth2(GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET);
+    oAuth2.setCredentials({ refresh_token: GMAIL_REFRESH_TOKEN });
+    const gmail = google.gmail({ version: 'v1', auth: oAuth2 });
+
+    const subject = 'Your Tan Lounge shade match';
     const html = `
-      <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.6;color:#111">
+      <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.55;color:#111">
         <h2 style="margin:0 0 8px">Your Tan Lounge match</h2>
-        <p>Hi ${escape(name)}, here’s your personalised result.</p>
-        <ul>
-          <li><strong>Shade family:</strong> ${escape(result.family||'')}</li>
-          <li><strong>Depth:</strong> ${escape(result.depth||'')}</li>
-          <li><strong>Rinse guide:</strong> ${escape(result.rinse||'')}</li>
-        </ul>
-        ${Array.isArray(result.tips)&&result.tips.length?`<p><em>Care tips:</em> ${result.tips.map(escape).join(' ')}</p>`:''}
-        <p style="margin:14px 0">Ready to glow? <a href="https://tanlounge.com.au/book" target="_blank" rel="noopener">Book your tan</a>.</p>
-        <hr style="border:none;border-top:1px solid #eee;margin:16px 0" />
-        <p style="font-size:12px;color:#555">Submitted from ${escape(site||'website')} • Phone: ${escape(phone||'')} • Marketing consent: ${marketingConsent?'Yes':'No'}</p>
-      </div>
-    `;
+        <p>Hi ${esc(name)}, here’s your personalised result.</p>
+        <table role="presentation" cellspacing="0" cellpadding="0" style="font-size:15px">
+          <tr><td><b>Shade family:</b> ${esc(result.family||'')}</td></tr>
+          <tr><td><b>Depth:</b> ${esc(result.depth||'')}</td></tr>
+          ${result.session ? `<tr><td><b>Session:</b> ${esc(result.session)}</td></tr>` : ''}
+          ${result.code ? `<tr><td><b>Tan Code:</b> ${esc(result.code)}</td></tr>` : ''}
+          <tr><td><b>Rinse guide:</b> ${esc(result.rinse||'')}</td></tr>
+        </table>
+        ${Array.isArray(result.tips)&&result.tips.length ? `<p><em>Care tips:</em> ${result.tips.map(esc).join(' ')}</p>` : ''}
+        <p style="margin:16px 0"><a href="https://tanlounge.com.au/book" target="_blank" rel="noopener">Book your session</a></p>
+        <hr style="border:none;border-top:1px solid #eee;margin:18px 0"/>
+        <p style="font-size:12px;color:#555">Submitted from ${esc(site||'website')} • Phone: ${esc(phone)} • Consent: ${marketingConsent?'Yes':'No'}</p>
+      </div>`;
 
-    // Send to customer
-    await fetch('https://api.sendgrid.com/v3/mail/send', {
-      method:'POST',
-      headers:{ 'Authorization':`Bearer ${SENDGRID_API_KEY}`, 'Content-Type':'application/json' },
-      body: JSON.stringify({
-        personalizations:[{ to:[{ email }], subject }],
-        from:{ email: FROM_EMAIL, name:'Tan Lounge' },
-        content:[{ type:'text/html', value: html }]
-      })
+    await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw: b64url(mime(GMAIL_SENDER, email, subject, html)) }
     });
 
-    // Optional internal copy
     if (INTERNAL_EMAIL) {
-      await fetch('https://api.sendgrid.com/v3/mail/send', {
-        method:'POST',
-        headers:{ 'Authorization':`Bearer ${SENDGRID_API_KEY}`, 'Content-Type':'application/json' },
-        body: JSON.stringify({
-          personalizations:[{ to:[{ email: INTERNAL_EMAIL }], subject:'New Tan Lounge Quiz Lead' }],
-          from:{ email: FROM_EMAIL, name:'Tan Lounge' },
-          content:[{ type:'text/html', value:
-            `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif">
-              <h3>New Quiz Lead</h3>
-              <p><strong>Name:</strong> ${escape(name)}<br/><strong>Email:</strong> ${escape(email)}<br/><strong>Phone:</strong> ${escape(phone)}<br/><strong>Consent:</strong> ${marketingConsent?'Yes':'No'}<br/><strong>Source:</strong> ${escape(source||'')}</p>
-              <pre style="white-space:pre-wrap">${escape(JSON.stringify({result,answers},null,2))}</pre>
-            </div>` }]
-        })
+      await gmail.users.messages.send({
+        userId: 'me',
+        requestBody: { raw: b64url(mime(GMAIL_SENDER, INTERNAL_EMAIL, 'New Tan Lounge Quiz Lead',
+          `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif">
+             <h3>New Quiz Lead</h3>
+             <p><b>Name:</b> ${esc(name)}<br/><b>Email:</b> ${esc(email)}<br/><b>Phone:</b> ${esc(phone)}<br/>
+             <b>Consent:</b> ${marketingConsent?'Yes':'No'}<br/><b>Site:</b> ${esc(site)}</p>
+             <pre style="white-space:pre-wrap">${esc(JSON.stringify({ result, answers }, null, 2))}</pre>
+           </div>`)) }
       });
     }
 
-    return { statusCode: 200, headers:{'Access-Control-Allow-Origin':'*'}, body: JSON.stringify({ ok:true }) };
+    return ok(JSON.stringify({ ok:true }), cors());
   } catch (e) {
-    return { statusCode: 500, headers:{'Access-Control-Allow-Origin':'*'}, body: JSON.stringify({ error: e.message || 'Send failed' }) };
+    return err(500, e.message || 'Send failed');
   }
 };
 
-function escape(s=''){ return String(s).replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' }[m])); }
+function mime(from,to,subject,html){
+  return [
+    `From: ${from}`, `To: ${to}`, `Subject: ${subject}`,
+    'MIME-Version: 1.0', 'Content-Type: text/html; charset=UTF-8', '', html
+  ].join('\n');
+}
+const b64url = s => Buffer.from(s).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const esc = (s='') => String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function cors(){ return { 'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'POST,OPTIONS','Access-Control-Allow-Headers':'Content-Type' }; }
+function ok(body,headers={}){ return { statusCode:200, headers:{ 'Content-Type':'application/json', ...headers }, body }; }
+function err(code,msg){ return { statusCode:code, headers:cors(), body: JSON.stringify({ error: msg }) }; }
